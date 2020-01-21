@@ -1,0 +1,10 @@
+[
+  {
+    "Description": "RHCOS 4.3 AWS VMDK",
+    "Format": "vmdk",
+    "UserBucket": {
+        "S3Bucket": "io-rdht-govcloud-vmimport",
+        "S3Key": "rhcos-43.81.201912030353.0-aws.x86_64.vmdk"
+    }
+  }
+]
