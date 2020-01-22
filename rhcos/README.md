@@ -131,6 +131,8 @@ imported using the `aws ec2 import-image` command.
 
 ### How We Got It To Work
 
+#### OpenShift 4.2
+
 Download the Bare Metal BIOS raw disk image, unarchive it, and upload it to S3:
 
 ```bash
@@ -500,6 +502,87 @@ aws ec2 register-image \
    --virtualization-type hvm \
    --root-device-name '/dev/sda1' \
    --block-device-mappings 'DeviceName=/dev/sda1,Ebs={DeleteOnTermination=true,SnapshotId=snap-0bc37f2db049f4864}'
+```
+
+You can now use this AMI for your RHCOS nodes when you deploy OpenShift 4.
+
+#### OpenShift 4.3
+
+Download the AWS VMDK disk image, unarchive it, and upload it to S3:
+
+```bash
+wget http://mirror.openshift.com/pub/openshift-v4/dependencies/rhcos/4.3/latest/rhcos-43.81.201912030353.0-aws.x86_64.vmdk.gz
+
+gunzip rhcos-43.81.201912030353.0-aws.x86_64.vmdk.gz
+
+aws s3 cp rhcos-43.81.201912030353.0-aws.x86_64.vmdk s3://io-rdht-govcloud-vmimport
+```
+
+Create the disk containers file `containers-43-aws-vmdk.json`:
+
+```json
+{
+   "Description": "RHCOS 4.3 AWS VMDK",
+   "Format": "vmdk",
+   "UserBucket": {
+      "S3Bucket": "io-rdht-govcloud-vmimport",
+      "S3Key": "rhcos-43.81.201912030353.0-aws.x86_64.vmdk"
+   }
+}
+```
+
+Import the disk as a snapshot into AWS:
+
+```bash
+aws ec2 import-snapshot \
+   --region us-gov-west-1 \
+   --description "RHCOS 4.3 AWS VMDK" \
+   --disk-container file://containers-43-aws-vmdk.json
+```
+
+Check the status of the image import:
+
+```bash
+aws ec2 describe-import-snapshot-tasks \
+   --region us-gov-west-1
+```
+
+After the import is complete, you should see similar output:
+
+```json
+{
+    "ImportSnapshotTasks": [
+        {
+            "Description": "RHCOS 4.3 AWS VMDK",
+            "ImportTaskId": "import-snap-fh6i8uil",
+            "SnapshotTaskDetail": {
+                "Description": "RHCOS 4.3 AWS VMDK",
+                "DiskImageSize": 819056640.0,
+                "Format": "VMDK",
+                "SnapshotId": "snap-06331325870076318",
+                "Status": "completed",
+                "UserBucket": {
+                    "S3Bucket": "io-rdht-govcloud-vmimport",
+                    "S3Key": "rhcos-43.81.201912030353.0-aws.x86_64.vmdk"
+                }
+            }
+        }
+    ]
+}
+```
+
+Register an image using the snapshot:
+
+```bash
+aws ec2 register-image \
+   --region us-gov-west-1 \
+   --architecture x86_64 \
+   --description "RHCOS 4.3 AWS VMDK" \
+   --ena-support \
+   --name "RHCOS 4.3 AWS VMDK" \
+   --virtualization-type hvm \
+   --root-device-name '/dev/sda1' \
+   --block-device-mappings 'DeviceName=/dev/sda1,Ebs={DeleteOnTermination=true,SnapshotId=snap-06331325870076318}'
 ```
 
 You can now use this AMI for your RHCOS nodes when you deploy OpenShift 4.
