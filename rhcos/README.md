@@ -112,6 +112,23 @@ to make work, and the thing we tried when attempting to get it to work.
 
 ### What We Need
 
+**TL;DR** We need a RHCOS image that can be uploaded to an S3 bucket and be
+usable by the `aws ec2 import-image` command.
+
+In OpenShift 4.2, there is no specific RHCOS image for AWS, which makes it
+difficult to install OpenShift 4.2 in alternative AWS regions where a RHCOS
+image isn't in the marketplace.
+
+In OpenShift 4.3 pre-release content, there is now a RHCOS image labeled for
+use in AWS. However, this image does not work as is because it contains an EFI
+partition and when you attempt to import it using `aws ec2 import-image`, it
+fails referencing an error that UEFI booting is not supported in AWS.
+
+I'm not sure if the fix to this problem is simply removing the EFI partition on
+the RHCOS AWS VMDK image or if it requires more work than that. In any case, we
+need a RHCOS image for AWS that can be uploaded to an S3 bucket as-is and be
+imported using the `aws ec2 import-image` command.
+
 ### How We Got It To Work
 
 Download the Bare Metal BIOS raw disk image, unarchive it, and upload it to S3:
@@ -485,22 +502,7 @@ aws ec2 register-image \
    --block-device-mappings 'DeviceName=/dev/sda1,Ebs={DeleteOnTermination=true,SnapshotId=snap-0bc37f2db049f4864}'
 ```
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+You can now use this AMI for your RHCOS nodes when you deploy OpenShift 4.
 
 ### Failed Attempts
 
