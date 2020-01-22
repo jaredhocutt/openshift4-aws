@@ -1,0 +1,8 @@
+{
+  "Description": "RHCOS 4.2 Metal BIOS RAW",
+  "Format": "raw",
+  "UserBucket": {
+     "S3Bucket": "io-rdht-govcloud-vmimport",
+     "S3Key": "rhcos-4.2.0-x86_64-metal-bios.raw"
+  }
+}
