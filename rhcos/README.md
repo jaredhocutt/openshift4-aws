@@ -50,7 +50,9 @@ Create a file named `trust-policy.json`:
 Create the `vmimport` role:
 
 ```bash
-aws iam create-role --role-name vmimport --assume-role-policy-document file://trust-policy.json
+aws iam create-role \
+   --role-name vmimport \
+   --assume-role-policy-document file://trust-policy.json
 ```
 
 Create a file named `role-policy.json`:
@@ -96,17 +98,413 @@ Create a file named `role-policy.json`:
 Attach the policy to the `vmimport` role:
 
 ```bash
-aws iam put-role-policy --role-name vmimport --policy-name vmimport --policy-document file://role-policy.json
+aws iam put-role-policy \
+   --role-name vmimport \
+   --policy-name vmimport \
+   --policy-document file://role-policy.json
 ```
 
 ## Import RHCOS Image
 
-The sections below describe the steps that were taken to attempt importing a
-RHCOS image into AWS. Each section will describe the steps that were taken, any
-modifications of the provided RHCOS images that took place, and what the
-outcomes were.
+This section describes the work that was done to attempt importing a RHCOS
+image into AWS. It is broken down by, what we need to have, what we were able
+to make work, and the thing we tried when attempting to get it to work.
 
-### OpenShift 4.3 AWS VMDK
+### What We Need
+
+### How We Got It To Work
+
+Download the Bare Metal BIOS raw disk image, unarchive it, and upload it to S3:
+
+```bash
+wget http://mirror.openshift.com/pub/openshift-v4/dependencies/rhcos/4.2/latest/rhcos-4.2.0-x86_64-metal-bios.raw.gz
+
+gunzip rhcos-4.2.0-x86_64-metal-bios.raw.gz
+
+aws s3 cp rhcos-4.2.0-x86_64-metal-bios.raw s3://io-rdht-govcloud-vmimport
+```
+
+Create the disk containers file `containers-42-metal-bios-raw.json`:
+
+```json
+{
+   "Description": "RHCOS 4.2 Metal BIOS RAW",
+   "Format": "raw",
+   "UserBucket": {
+      "S3Bucket": "io-rdht-govcloud-vmimport",
+      "S3Key": "rhcos-4.2.0-x86_64-metal-bios.raw"
+   }
+}
+```
+
+Import the disk as a snapshot into AWS:
+
+```bash
+aws ec2 import-snapshot \
+   --region us-gov-west-1 \
+   --description "RHCOS 4.2 Metal BIOS RAW" \
+   --disk-container file://containers-42-metal-bios-raw.json
+```
+
+Check the status of the image import:
+
+```bash
+aws ec2 describe-import-snapshot-tasks \
+   --region us-gov-west-1
+```
+
+After the import is complete, you should see similar output:
+
+```json
+{
+    "ImportSnapshotTasks": [
+        {
+            "Description": "RHCOS 4.2 Metal BIOS RAW",
+            "ImportTaskId": "import-snap-fgtxpsup",
+            "SnapshotTaskDetail": {
+                "Description": "RHCOS 4.2 Metal BIOS RAW",
+                "DiskImageSize": 3182428160.0,
+                "Format": "RAW",
+                "SnapshotId": "snap-0f901db0c624c671f",
+                "Status": "completed",
+                "UserBucket": {
+                    "S3Bucket": "io-rdht-govcloud-vmimport",
+                    "S3Key": "rhcos-4.2.0-x86_64-metal-bios.raw"
+                }
+            }
+        }
+    ]
+}
+```
+
+Create a volume from the snapshot:
+
+```bash
+aws ec2 create-volume \
+   --region us-gov-west-1 \
+   --availability-zone us-gov-west-1a \
+   --volume-type gp2 \
+   --snapshot-id snap-0f901db0c624c671f
+```
+
+```json
+{
+    "AvailabilityZone": "us-gov-west-1a",
+    "CreateTime": "2020-01-22T16:05:39.000Z",
+    "Encrypted": false,
+    "Size": 3,
+    "SnapshotId": "snap-0f901db0c624c671f",
+    "State": "creating",
+    "VolumeId": "vol-052d72515b93e3948",
+    "Iops": 100,
+    "Tags": [],
+    "VolumeType": "gp2"
+}
+```
+
+Check the status of the volume creation:
+
+```bash
+aws ec2 describe-volume-status \
+   --region us-gov-west-1 \
+   --volume-ids vol-052d72515b93e3948
+```
+
+After the volume creation is complete, you should see similar output:
+
+```json
+{
+    "VolumeStatuses": [
+        {
+            "Actions": [],
+            "AvailabilityZone": "us-gov-west-1a",
+            "Events": [],
+            "VolumeId": "vol-052d72515b93e3948",
+            "VolumeStatus": {
+                "Details": [
+                    {
+                        "Name": "io-enabled",
+                        "Status": "passed"
+                    },
+                    {
+                        "Name": "io-performance",
+                        "Status": "not-applicable"
+                    }
+                ],
+                "Status": "ok"
+            }
+        }
+    ]
+}
+```
+
+Create an EC2 instance you can use to modify the volume you created:
+
+```bash
+aws ec2 run-instances \
+   --region us-gov-west-1 \
+   --instance-type t3.medium \
+   --image-id ami-5a740e3b \
+   --key-name default \
+   --security-group-ids sg-da4b7abc \
+   --subnet-id subnet-79952d1d \
+   --tag-specifications 'ResourceType=instance,Tags=[{Key=Name,Value=rhcos-modifications}]' \
+   --associate-public-ip-address
+```
+
+```json
+{
+    "Groups": [],
+    "Instances": [
+        {
+            "AmiLaunchIndex": 0,
+            "ImageId": "ami-5a740e3b",
+            "InstanceId": "i-0ab65eb0272069e1d",
+            "InstanceType": "t3.medium",
+            "KeyName": "default",
+            "LaunchTime": "2020-01-22T16:50:14.000Z",
+            "Monitoring": {
+                "State": "disabled"
+            },
+            "Placement": {
+                "AvailabilityZone": "us-gov-west-1a",
+                "GroupName": "",
+                "Tenancy": "default"
+            },
+            "PrivateDnsName": "ip-172-31-20-233.us-gov-west-1.compute.internal",
+            "PrivateIpAddress": "172.31.20.233",
+            "ProductCodes": [],
+            "PublicDnsName": "",
+            "State": {
+                "Code": 0,
+                "Name": "pending"
+            },
+            "StateTransitionReason": "",
+            "SubnetId": "subnet-79952d1d",
+            "VpcId": "vpc-d33cd0b7",
+            "Architecture": "x86_64",
+            "BlockDeviceMappings": [],
+            "ClientToken": "",
+            "EbsOptimized": false,
+            "Hypervisor": "xen",
+            "NetworkInterfaces": [
+                {
+                    "Attachment": {
+                        "AttachTime": "2020-01-22T16:50:14.000Z",
+                        "AttachmentId": "eni-attach-c4d96226",
+                        "DeleteOnTermination": true,
+                        "DeviceIndex": 0,
+                        "Status": "attaching"
+                    },
+                    "Description": "",
+                    "Groups": [
+                        {
+                            "GroupName": "ssh",
+                            "GroupId": "sg-da4b7abc"
+                        }
+                    ],
+                    "Ipv6Addresses": [],
+                    "MacAddress": "02:a7:07:0b:eb:2e",
+                    "NetworkInterfaceId": "eni-34514968",
+                    "OwnerId": "676111148133",
+                    "PrivateDnsName": "ip-172-31-20-233.us-gov-west-1.compute.internal",
+                    "PrivateIpAddress": "172.31.20.233",
+                    "PrivateIpAddresses": [
+                        {
+                            "Primary": true,
+                            "PrivateDnsName": "ip-172-31-20-233.us-gov-west-1.compute.internal",
+                            "PrivateIpAddress": "172.31.20.233"
+                        }
+                    ],
+                    "SourceDestCheck": true,
+                    "Status": "in-use",
+                    "SubnetId": "subnet-79952d1d",
+                    "VpcId": "vpc-d33cd0b7"
+                }
+            ],
+            "RootDeviceName": "/dev/sda1",
+            "RootDeviceType": "ebs",
+            "SecurityGroups": [
+                {
+                    "GroupName": "ssh",
+                    "GroupId": "sg-da4b7abc"
+                }
+            ],
+            "SourceDestCheck": true,
+            "StateReason": {
+                "Code": "pending",
+                "Message": "pending"
+            },
+            "Tags": [
+                {
+                    "Key": "Name",
+                    "Value": "rhcos-modifications"
+                }
+            ],
+            "VirtualizationType": "hvm",
+            "CpuOptions": {
+                "CoreCount": 1,
+                "ThreadsPerCore": 2
+            },
+            "CapacityReservationSpecification": {
+                "CapacityReservationPreference": "open"
+            }
+        }
+    ],
+    "OwnerId": "676111148133",
+    "ReservationId": "r-05578e08da0263e81"
+}
+```
+
+Attach the volume to the EC2 instance:
+
+```bash
+aws ec2 attach-volume \
+   --region us-gov-west-1 \
+   --device xvdf \
+   --instance-id i-0ab65eb0272069e1d \
+   --volume-id vol-052d72515b93e3948
+```
+
+When the instance is done booting, SSH into the instance for the next steps.
+
+Find the device for your volume:
+
+```bash
+lsblk
+```
+
+```text
+NAME        MAJ:MIN RM SIZE RO TYPE MOUNTPOINT
+nvme0n1     259:0    0  10G  0 disk
+├─nvme0n1p1 259:1    0   1M  0 part
+└─nvme0n1p2 259:2    0  10G  0 part /
+nvme1n1     259:3    0   3G  0 disk
+├─nvme1n1p1 259:4    0   1M  0 part
+├─nvme1n1p2 259:5    0   1G  0 part
+└─nvme1n1p3 259:6    0   2G  0 part
+```
+
+Mount the 2nd partition so we can make modifications:
+
+```bash
+sudo mount /dev/nvme1n1p2 /mnt
+```
+
+Modify `/mnt/grub2/grub.cfg` to change the kernel parameters
+`coreos.oem.id=metal ignition.platform.id=metal` to be `coreos.oem.id=qemu
+coreos.oem.id=ec2 ignition.platform.id=ec2` instead:
+
+```bash
+sudo sed -i 's/coreos.oem.id=metal ignition.platform.id=metal/coreos.oem.id=qemu coreos.oem.id=ec2 ignition.platform.id=ec2/' /mnt/grub2/grub.cfg
+```
+
+Unmount the partition:
+
+```bash
+sudo umount /mnt
+```
+
+You can now disconnect from the SSH session.
+
+Detach the volume from your EC2 instance and then terminate the instance:
+
+```bash
+aws ec2 detach-volume \
+   --region us-gov-west-1 \
+   --volume-id vol-052d72515b93e3948
+
+aws ec2 terminate-instances \
+   --region us-gov-west-1 \
+   --instance-ids i-0ab65eb0272069e1d
+```
+
+Create a new snapshot from the modified volume:
+
+```bash
+aws ec2 create-snapshot \
+   --region us-gov-west-1 \
+   --description "RHCOS 4.2 Metal BIOS RAW Modified" \
+   --volume-id vol-052d72515b93e3948
+```
+
+```json
+{
+    "Description": "RHCOS 4.2 Metal BIOS RAW Modified",
+    "Encrypted": false,
+    "OwnerId": "676111148133",
+    "Progress": "",
+    "SnapshotId": "snap-0bc37f2db049f4864",
+    "StartTime": "2020-01-22T17:59:48.000Z",
+    "State": "pending",
+    "VolumeId": "vol-052d72515b93e3948",
+    "VolumeSize": 3,
+    "Tags": []
+}
+```
+
+Check the status of the snapshot creation:
+
+```bash
+aws ec2 describe-snapshots \
+   --region us-gov-west-1 \
+   --snapshot-ids snap-0bc37f2db049f4864
+```
+
+After the snapshot creation is complete, you should see similar output:
+
+```json
+{
+    "Snapshots": [
+        {
+            "Description": "RHCOS 4.2 Metal BIOS RAW Modified",
+            "Encrypted": false,
+            "OwnerId": "676111148133",
+            "Progress": "100%",
+            "SnapshotId": "snap-0bc37f2db049f4864",
+            "StartTime": "2020-01-22T17:59:48.000Z",
+            "State": "completed",
+            "VolumeId": "vol-052d72515b93e3948",
+            "VolumeSize": 3
+        }
+    ]
+}
+```
+
+Register a new image using the new snapshot:
+
+```bash
+aws ec2 register-image \
+   --region us-gov-west-1 \
+   --architecture x86_64 \
+   --description "RHCOS 4.2 Metal BIOS RAW Modified" \
+   --ena-support \
+   --name "RHCOS 4.2 Metal BIOS RAW Modified" \
+   --virtualization-type hvm \
+   --root-device-name '/dev/sda1' \
+   --block-device-mappings 'DeviceName=/dev/sda1,Ebs={DeleteOnTermination=true,SnapshotId=snap-0bc37f2db049f4864}'
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+### Failed Attempts
+
+#### OpenShift 4.3 AWS VMDK
 
 Download the AWS VMDK image, unarchive it, and upload it to S3:
 
@@ -136,7 +534,13 @@ Create the disk containers file `containers-43-aws-vmdk.json`:
 Import the image into AWS:
 
 ```bash
-aws ec2 import-image --architecture x86_64 --description "RHCOS 4.3 AWS VMDK" --license-type BYOL --platform Linux --region us-gov-west-1 --disk-containers file://containers-43-aws-vmdk.json
+aws ec2 import-image \
+   --region us-gov-west-1 \
+   --architecture x86_64 \
+   --description "RHCOS 4.3 AWS VMDK" \
+   --license-type BYOL \
+   --platform Linux \
+   --disk-containers file://containers-43-aws-vmdk.json
 ```
 
 Check the status of the image import:
@@ -177,6 +581,6 @@ After the import is complete, here's the error that we get:
 
 ### OpenShift 4.3 Metal RAW
 
-### OpenShift 4.3 VMware OVA
+### OpenShift 4.2 VMware OVA
 
-### OpenShift 4.3 Metal BIOS RAW
+### OpenShift 4.2 Metal BIOS RAW
